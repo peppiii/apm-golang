@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apm-golang
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: apm-golang
+  template:
+    metadata:
+      labels:
+        app: apm-golang
+    spec:
+      containers:
+      - name: order
+        image: asia.gcr.io/$NAMESPACE/order:$BUILD_NUMBER
+        ports:
+          - containerPort: 8081

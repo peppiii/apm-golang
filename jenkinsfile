@@ -1,0 +1,136 @@
+pipeline {
+    agent {
+        node {
+            label 'slave-00'
+            customWorkspace "workspace/${env.BRANCH_NAME}/src/about.gitlab.com/service/apm-golang"
+        }
+    }
+    environment {
+        SERVICE = 'apm-golang'
+        TEAMS_MICROSOFT = credentials('komunikasi-ke-team-microsoft')
+    }
+    options {
+        buildDiscarder(logRotator(daysToKeepStr: env.BRANCH_NAME == 'master' ? '90' : '30'))
+    }
+    stages {
+        stage('Checkout') {
+            when {
+                anyOf { branch 'master'; branch 'develop'; branch 'staging' }
+            }
+            steps {
+                echo 'Checking out from Git'
+                checkout scm
+            }
+        }
+        stage('Testing'){
+            steps {
+                sh "go test ./... -coverprofile coverage.out"
+            }
+        }
+        stage('Code review') {
+            environment {
+                scannerHome = tool 'sonarQubeScanner'
+            }
+            steps {
+                withSonarQubeEnv('sonarQube') {
+                    sh "${scannerHome}/bin/sonar-scanner"
+                }
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+                sh "rm coverage.out"
+            }
+        }
+        stage('Prepare') {
+            steps {
+                withCredentials([file(credentialsId: 'punya-service-account-json', variable: 'serviceaccount')]) {
+                sh "cp $serviceaccount service-account.json"
+                sh "chmod 644 service-account.json"
+                sh '''docker login -u _json_key -p "$(cat service-account.json)" https://asia.gcr.io'''
+                }
+            }
+        }
+        stage('Build and Deploy') {
+            environment {
+                GOPATH = "${env.JENKINS_HOME}/workspace/${env.BRANCH_NAME}"
+                VERSION_PREFIX = '1.3'
+            }
+            stages {
+                stage('Deploy to development') {
+                    when {
+                        branch 'develop'
+                    }
+                    environment {
+                        ALPHA = "${env.VERSION_PREFIX}-alpha${env.BUILD_NUMBER}"
+                        NAMESPACE="testing-dev-1912"
+                    }
+                    steps {
+                        withCredentials([file(credentialsId: 'kubeconfig-gke-dev', variable: 'kubeconfig')]) {
+                        sh "cp $kubeconfig kubeconfig.conf"
+                        sh "chmod 644 kubeconfig.conf"
+                        sh 'chmod +x build.sh'
+                        sh './build.sh $ALPHA'
+                        sh 'chmod +x deploy.sh'
+                        sh './deploy.sh $ALPHA $NAMESPACE default'
+                        sh 'rm kubeconfig.conf service-account.json'
+                        }
+                    }
+                }
+                stage('Deploy to staging') {
+                    when {
+                        branch 'staging'
+                    }
+                    environment {
+                        BETA = "${env.VERSION_PREFIX}-beta${env.BUILD_NUMBER}"
+                        NAMESPACE="testing-dev-0304"
+                    }
+                    steps {
+                        withCredentials([file(credentialsId: 'kubeconfig-gke-dev', variable: 'kubeconfig')]) {
+                        sh "cp $kubeconfig kubeconfig.conf"
+                        sh "chmod 644 kubeconfig.conf"
+                        sh 'chmod +x build.sh'
+                        sh './build.sh $BETA'
+                        sh 'chmod +x deploy.sh'
+                        sh './deploy.sh $BETA $NAMESPACE staging'
+                        sh 'rm kubeconfig.conf service-account.json'
+                        }
+                    }
+                }
+                stage('Deploy to Production With Tag') {
+                    when {
+                        tag 'v*'
+                    }
+                    environment {
+                        VERSION = "${env.TAG_NAME}"
+                        NAMESPACE="testing-prd-0503"
+                    }
+                    steps {
+                        withCredentials([file(credentialsId: 'kubeconfig-gke-prd', variable: 'kubeconfig')]) {
+                        sh "cp $kubeconfig kubeconfig.conf"
+                        sh "chmod 644 kubeconfig.conf"
+                        sh 'chmod +x build.sh'
+                        sh './build.sh $VERSION'
+                        sh 'chmod +x deploy.sh'
+                        sh './deploy.sh $VERSION $NAMESPACE default'
+                        sh 'rm kubeconfig.conf service-account.json'
+                        }
+                    }
+                }
+            }
+        }
+    }
+    post {
+        success {
+            office365ConnectorSend webhookUrl: "$TEAMS_MICROSOFT",
+                message: "Application project Service $SERVICE has been [deployed]",
+                color: "05b222",
+                status: 'Success'
+        }
+        failure {
+            office365ConnectorSend webhookUrl: "$TEAMS_MICROSOFT",
+                message: "Application project Service $SERVICE has been [Failed]",
+                color: "d00000",
+                status: 'Failed'
+        }
+    }
+}
