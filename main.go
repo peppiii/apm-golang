@@ -21,12 +21,12 @@ import (
 
 type Author struct {
 	Name string `json:"name"`
-	Age int `json:"age"`
+	Age int     `json:"age"`
 }
 
 
 const (
-  host     = os.Getenv("hosts")
+  host     = os.Getenv("host")
   port     = os.Getenv("port")
   user     = os.Getenv("user")
   password = os.Getenv("password")
